@@ -231,6 +231,17 @@ pub const SYSTEM_HEBREW_FALLBACK: &str = "system-hebrew-fallback";
 /// The name of the installed Hangul (Korean) face [`installed_font_definitions`] may add.
 pub const SYSTEM_HANGUL_FALLBACK: &str = "system-hangul-fallback";
 
+/// The name of TH Sarabun PSK, the installed Thai face [`installed_font_definitions`] may add.
+pub const SYSTEM_THAI_PREFERRED: &str = "system-thai-preferred";
+
+/// Put `name` in `stack` just before the first of the `embedded` faces, or last when the stack
+/// has none of them. An installed face placed this way draws its script ahead of the embedded
+/// one, and never ahead of the faces before it (Inter, the CJK faces).
+fn insert_before_embedded(stack: &mut Vec<String>, name: &str, embedded: &[String]) {
+    let at = stack.iter().position(|n| embedded.contains(n)).unwrap_or(stack.len());
+    stack.insert(at, name.to_owned());
+}
+
 /// Which installed face an interface language needs, given whether the build embeds a `Hans`
 /// face.
 ///
@@ -267,6 +278,10 @@ fn installed_fallback_need(cjk: CjkPreference, has_embedded_hans: bool) -> crate
 /// Korean text, such as a file name or a tab title, and Hebrew file names (#586) draw in a build
 /// without such faces.
 ///
+/// TH Sarabun PSK, when the user has installed it, is the Thai face: it goes just before the
+/// embedded Thai faces (Noto Sans Thai) instead of after everything, so Thai text draws in it
+/// and falls back to the embedded face only for characters it lacks.
+///
 /// `PDFCRAFT_SYSTEM_FONTS=0` leaves them out.
 pub fn installed_font_definitions(cjk: CjkPreference) -> FontDefinitions {
     #[cfg_attr(target_arch = "wasm32", expect(unused_mut))]
@@ -274,6 +289,13 @@ pub fn installed_font_definitions(cjk: CjkPreference) -> FontDefinitions {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use crate::system_fonts::{Need, fallback};
+        if let Some(data) = crate::system_fonts::thai_preferred() {
+            fonts.font_data.insert(SYSTEM_THAI_PREFERRED.to_owned(), data);
+            let thai: Vec<String> = pdfcraft_fonts::ui_thai_fonts().iter().map(|f| f.name()).collect();
+            for stack in fonts.families.values_mut() {
+                insert_before_embedded(stack, SYSTEM_THAI_PREFERRED, &thai);
+            }
+        }
         // Before the general installed face, which stays the last fallback outside Chinese.
         for (name, data) in [
             (SYSTEM_DEVANAGARI_FALLBACK, crate::system_fonts::devanagari_fallback()),

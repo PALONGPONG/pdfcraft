@@ -166,6 +166,34 @@ fn system_fallback_fills_missing_scripts() {
     assert!(layout_widths(&mut fonts, ARABIC).iter().all(|w| w.is_finite() && *w > 0.0));
 }
 
+/// On a machine with TH Sarabun PSK installed, the installed definitions name it once in every
+/// family, ahead of any embedded Thai face, and Thai text has glyphs; the embedded-only
+/// definitions never name it.
+#[test]
+fn installed_th_sarabun_is_the_thai_face() {
+    const THAI: &str = "\u{0e20}\u{0e32}\u{0e29}\u{0e32}\u{0e44}\u{0e17}\u{0e22}";
+    assert!(!theme::font_definitions().font_data.contains_key(theme::SYSTEM_THAI_PREFERRED));
+    let defs = theme::installed_font_definitions(theme::CjkPreference::Default);
+    if !defs.font_data.contains_key(theme::SYSTEM_THAI_PREFERRED) {
+        eprintln!("skipping installed_th_sarabun_is_the_thai_face: TH Sarabun PSK is not installed (or PDFCRAFT_SYSTEM_FONTS=0)");
+        assert!(defs.families.values().all(|stack| !stack.iter().any(|n| n == theme::SYSTEM_THAI_PREFERRED)));
+        return;
+    }
+    let embedded: Vec<String> = pdfcraft_fonts::ui_thai_fonts().iter().map(|f| f.name()).collect();
+    for (family, stack) in &defs.families {
+        assert_eq!(stack.iter().filter(|n| *n == theme::SYSTEM_THAI_PREFERRED).count(), 1, "{family:?}: {stack:?}");
+        let at = stack.iter().position(|n| n == theme::SYSTEM_THAI_PREFERRED);
+        for name in &embedded {
+            assert!(at < stack.iter().position(|n| n == name), "{family:?}: {stack:?}");
+        }
+    }
+    let mut fonts = Fonts::new(TextOptions::default(), defs);
+    for id in families() {
+        assert!(fonts.has_glyphs(&id, THAI), "{id:?} lacks {THAI}");
+    }
+    assert!(layout_widths(&mut fonts, THAI).iter().all(|w| w.is_finite() && *w > 0.0));
+}
+
 /// On a machine with a suitable installed Devanagari font, the installed definitions include
 /// it and Hindi text has glyphs; the embedded-only definitions never name it.
 #[test]
