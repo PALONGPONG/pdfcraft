@@ -5,10 +5,7 @@
 //! craft-fonts, or the Simplified Chinese interface in a build without a `Hans` face (#826). A
 //! few more installed faces, [`devanagari_fallback`], [`telugu_fallback`], [`sinhala_fallback`],
 //! [`tamil_fallback`], [`hebrew_fallback`] and [`hangul_fallback`], draw Hindi, Telugu, Sinhala,
-//! Tamil, Hebrew and Korean when one is installed. [`thai_preferred`] is the one installed face
-//! that goes *before* an embedded one: TH Sarabun PSK, Thailand's standard document typeface,
-//! draws Thai interface text ahead of the embedded Noto Sans Thai when the user has installed
-//! it. Each is read at runtime and never embedded or
+//! Tamil, Hebrew and Korean when one is installed. It is read at runtime and never embedded or
 //! shipped (AGENTS.md §1.4), and `PDFCRAFT_SYSTEM_FONTS=0` turns it off (published screenshots do).
 
 use std::path::{Path, PathBuf};
@@ -40,11 +37,6 @@ const HEBREW_PROBE: char = '\u{05D0}';
 /// Hangul syllable hih (힣, U+D7A3), the last of the 11,172 modern syllables: a face with it has
 /// the whole block. Droid Sans Fallback, for one, has 가 but few other syllables.
 const HANGUL_PROBE: char = '\u{D7A3}';
-/// Thai letter ko kai (ก): the face must have it to cover Thai.
-const THAI_PROBE: char = '\u{0E01}';
-/// TH Sarabun PSK is drawn small on its em: at one font size its letters are about three
-/// quarters the height of Inter's or Noto Sans Thai's, so it is scaled up to sit with them.
-const TH_SARABUN_SCALE: f32 = 1.3;
 /// 欢 (U+6B22): Simplified only, absent from the Japanese craft-fonts faces.
 const HANS_PROBE: char = '\u{6B22}';
 /// 說 (U+8AAA): Traditional only, absent from the Japanese craft-fonts faces.
@@ -128,55 +120,6 @@ pub fn hebrew_fallback() -> Option<Arc<FontData>> {
 pub fn hangul_fallback() -> Option<Arc<FontData>> {
     static CACHE: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
     CACHE.get_or_init(|| script_fallback(&hangul_candidates(), HANGUL_PROBE)).clone()
-}
-
-/// TH Sarabun PSK (or its revision, TH Sarabun New) when the user has installed it, read once.
-/// The interface draws Thai with it ahead of the embedded Thai face. `None` when installed
-/// fonts are turned off or it is not installed; Thai then uses the embedded face as before.
-/// Like every face here it is only read, never embedded, shipped or written into a PDF.
-pub fn thai_preferred() -> Option<Arc<FontData>> {
-    static CACHE: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
-    CACHE.get_or_init(|| script_fallback(&thai_candidates(), THAI_PROBE).map(th_sarabun_scaled)).clone()
-}
-
-fn th_sarabun_scaled(data: Arc<FontData>) -> Arc<FontData> {
-    let mut data = Arc::unwrap_or_clone(data);
-    data.tweak.scale = TH_SARABUN_SCALE;
-    Arc::new(data)
-}
-
-/// The Regular files of TH Sarabun PSK, then TH Sarabun New, under the names their installers
-/// use.
-const TH_SARABUN_FILES: &[&str] = &["THSarabun.ttf", "THSarabunPSK.ttf", "THSarabunNew.ttf"];
-
-/// Where TH Sarabun PSK is installed, system-wide folders before the user's own. No operating
-/// system ships it, so the per-user font folders matter here more than for the other scripts.
-fn thai_candidates() -> Vec<PathBuf> {
-    if cfg!(windows) {
-        let user = std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Microsoft").join("Windows").join("Fonts"));
-        thai_candidates_in(std::iter::once(windows_fonts()).chain(user))
-    } else if cfg!(target_os = "macos") {
-        let user = std::env::var_os("HOME").map(|dir| PathBuf::from(dir).join("Library").join("Fonts"));
-        thai_candidates_in(std::iter::once(PathBuf::from("/Library/Fonts")).chain(user))
-    } else {
-        // Fontconfig's directories (which include the user's) are searched for the same names.
-        unix_fonts(&[
-            "THSarabun.ttf",
-            "truetype/THSarabun.ttf",
-            "truetype/thai/THSarabun.ttf",
-            "THSarabunPSK.ttf",
-            "THSarabunNew.ttf",
-            "truetype/THSarabunNew.ttf",
-            "truetype/thai/THSarabunNew.ttf",
-        ])
-    }
-}
-
-/// Every [`TH_SARABUN_FILES`] name in every folder of `dirs`, file-major so TH Sarabun PSK in
-/// any folder wins over TH Sarabun New in an earlier one.
-fn thai_candidates_in(dirs: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
-    let dirs: Vec<PathBuf> = dirs.collect();
-    TH_SARABUN_FILES.iter().flat_map(|file| dirs.iter().map(move |dir| dir.join(file))).collect()
 }
 
 fn script_fallback(candidates: &[PathBuf], probe: char) -> Option<Arc<FontData>> {
@@ -623,33 +566,6 @@ mod tests {
             assert!(list.iter().all(|p| p.is_absolute() || cfg!(windows)), "{list:?}");
             assert!(list.iter().all(|p| p.extension().is_some_and(|e| e == "ttf" || e == "ttc")), "{list:?}");
         }
-    }
-
-    #[test]
-    fn thai_candidates_are_th_sarabun_only_psk_before_new() {
-        let list = thai_candidates();
-        assert!(!list.is_empty());
-        assert!(list.iter().all(|p| p.is_absolute() || cfg!(windows)), "{list:?}");
-        let name = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
-        assert!(list.iter().all(|p| name(p).is_some_and(|n| n.starts_with("THSarabun") && n.ends_with(".ttf"))), "{list:?}");
-        // File-major: PSK in the user's folder still beats New in the system folder.
-        let dirs = [PathBuf::from("/system"), PathBuf::from("/user")];
-        let ordered = thai_candidates_in(dirs.into_iter());
-        let pos = |path: &str| ordered.iter().position(|p| p == Path::new(path));
-        assert!(pos("/user/THSarabun.ttf") < pos("/system/THSarabunNew.ttf"), "{ordered:?}");
-        assert!(pos("/system/THSarabun.ttf") < pos("/user/THSarabun.ttf"), "{ordered:?}");
-    }
-
-    #[test]
-    fn th_sarabun_is_scaled_up_and_keeps_the_interface_baseline() {
-        // Inter has no Thai, so a face that is not Thai is never taken for TH Sarabun.
-        let inter = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter-Regular.ttf"));
-        assert_eq!(face_with(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf"), THAI_PROBE), None);
-        let data = read(&inter, 'A', MAX_BYTES).expect("Inter covers 'A'");
-        let scaled = th_sarabun_scaled(data.clone());
-        assert!((scaled.tweak.scale - TH_SARABUN_SCALE).abs() < f32::EPSILON);
-        assert_eq!(scaled.tweak.fallback_align, data.tweak.fallback_align);
-        assert_eq!(scaled.index, data.index);
     }
 
     #[test]

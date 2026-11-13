@@ -166,18 +166,6 @@ fn fallback_faces_share_the_interface_baseline() {
     assert_eq!(on_interface_baseline(FontData::from_static(dancing)).tweak.fallback_align, FallbackAlign::Baseline);
 }
 
-#[test]
-fn an_installed_thai_face_goes_just_before_the_embedded_thai_face() {
-    let embedded = ["NotoSansThai".to_owned()];
-    let mut stack: Vec<String> = ["Inter", "BIZUDPGothic", "NotoSansThai", "NotoSansDevanagari"].map(str::to_owned).to_vec();
-    insert_before_embedded(&mut stack, SYSTEM_THAI_PREFERRED, &embedded);
-    assert_eq!(stack, ["Inter", "BIZUDPGothic", SYSTEM_THAI_PREFERRED, "NotoSansThai", "NotoSansDevanagari"]);
-    // A build without craft-fonts has no embedded Thai face: the installed one goes last.
-    let mut bare: Vec<String> = vec!["Inter".to_owned()];
-    insert_before_embedded(&mut bare, SYSTEM_THAI_PREFERRED, &embedded);
-    assert_eq!(bare, ["Inter", SYSTEM_THAI_PREFERRED]);
-}
-
 /// The policy only exists on native platforms (`installed_font_definitions` has no installed
 /// faces on wasm), so the test must not use it in a wasm test build.
 #[cfg(not(target_arch = "wasm32"))]
