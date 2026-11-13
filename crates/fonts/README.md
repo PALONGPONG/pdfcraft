@@ -55,6 +55,9 @@ set). Without that variable `CRAFT_FONTS` is empty and everything below copes:
 - `document_japanese_fonts_for_style`: every `Jpan` face in that order of preference, so the
   editor can use the first one that has all of the replacement's glyphs (the faces differ in
   coverage, e.g. of Cyrillic).
+- `set_installed_thai_document_font`: the desktop app registers an installed TH Sarabun PSK at
+  start-up, and `document_thai_font` then returns it ahead of the craft-fonts face; the interface
+  faces (`ui_thai_fonts`) are not affected.
 - `ui_thai_fonts` / `document_thai_font` / `shape_thai`: the `Thai` faces for the interface
   and shaped Thai content. Harfrust positions stacked vowel/tone marks and decomposes
   Sara Am; cluster ToUnicode entries preserve the original text. The shared Type 3 writer

@@ -33,14 +33,14 @@ pub fn installed_directories() -> Vec<PathBuf> {
 }
 
 /// Bounded scan with resolved roots and no descendant symlinks.
-/// Only standalone, openly licensed, embeddable faces are listed.
+/// Only standalone, embeddable faces are listed.
 /// The caller controls roots (automation resolves confinement before calling this).
 pub fn discover(roots: &[PathBuf]) -> Vec<FontFile> {
     discover_budgeted(roots, 64u64 << 20)
 }
 
 /// Bounded scan with resolved roots and no descendant symlinks. `budget` caps the total
-/// size of the fonts listed: a rejected file (unreadable, not openly licensed, a duplicate)
+/// size of the fonts listed: a rejected file (unreadable, not embeddable, a duplicate)
 /// does not spend it. Every file read
 /// counts against four times the budget, so a folder of unusable fonts cannot stall the scan.
 pub fn discover_budgeted(roots: &[PathBuf], mut budget: u64) -> Vec<FontFile> {
@@ -96,6 +96,77 @@ pub fn discover_budgeted(roots: &[PathBuf], mut budget: u64) -> Vec<FontFile> {
     files
 }
 
+/// TH Sarabun PSK, Thailand's standard document typeface, then its revision TH Sarabun New:
+/// the installed families Thai document text defaults to, best first, as
+/// [`face_key`](pdfcraft_fonts::embedding::face_key)s.
+const THAI_DEFAULT_FAMILIES: [&str; 2] = ["thsarabunpsk", "thsarabunnew"];
+
+/// Make an installed TH Sarabun PSK the face Thai text is written into PDFs with, for this
+/// process. The desktop app calls it once at start-up; the CLI and the tests never do, so
+/// their output does not depend on the machine. `PDFCRAFT_SYSTEM_FONTS=0` turns it off.
+///
+/// `Ok(Some(family))` when a face was registered, `Ok(None)` when none is installed (Thai then
+/// uses the bundled face), `Err` when an installed face was refused.
+pub fn use_installed_thai_document_font() -> Result<Option<&'static str>, String> {
+    if std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0") {
+        return Ok(None);
+    }
+    let Some(bytes) = installed_regular_face(&installed_directories(), &THAI_DEFAULT_FAMILIES, "thsarabun") else { return Ok(None) };
+    pdfcraft_fonts::set_installed_thai_document_font(bytes).map(Some)
+}
+
+/// The Regular face of the first of `families` installed under `roots`, read from files whose
+/// name starts with `file_prefix` (ASCII, case-insensitive) so a font folder is listed but not
+/// read. Bounded like [`discover`]: resolved roots, no descendant symlinks, capped entries.
+fn installed_regular_face(roots: &[PathBuf], families: &[&str], file_prefix: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut pending: Vec<_> = roots.iter().take(16).filter_map(|r| r.canonicalize().ok()).map(|r| (r, 0usize)).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = 0usize;
+    let mut read_allowance = 64u64 << 20;
+    // The best face found so far, with its rank in `families`.
+    let mut best: Option<(usize, Vec<u8>)> = None;
+    while let Some((path, depth)) = pending.pop() {
+        if entries >= 4096 {
+            break;
+        }
+        entries += 1;
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() || !seen.insert(path.clone()) {
+            continue;
+        }
+        if meta.is_dir() && depth < 4 {
+            if let Ok(children) = std::fs::read_dir(&path) {
+                let remaining = 4096usize.saturating_sub(entries.saturating_add(pending.len()));
+                let mut children: Vec<_> = children.filter_map(Result::ok).take(remaining).map(|p| p.path()).collect();
+                children.sort();
+                pending.extend(children.into_iter().rev().map(|p| (p, depth + 1)));
+            }
+            continue;
+        }
+        let named = path.file_name().and_then(std::ffi::OsStr::to_str).is_some_and(|n| n.to_ascii_lowercase().starts_with(file_prefix));
+        if !meta.is_file() || !named || !font_extension(&path) || meta.len() > (16 << 20) || meta.len() > read_allowance {
+            continue;
+        }
+        read_allowance = read_allowance.saturating_sub(meta.len());
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(&path).and_then(|f| f.take(meta.len().saturating_add(1)).read_to_end(&mut bytes));
+        if read.is_err() || bytes.len() as u64 != meta.len() || pdfcraft_fonts::embedding::validate_document_input(&bytes).is_err() {
+            continue;
+        }
+        let Ok((family, postscript)) = pdfcraft_fonts::embedding::names(&bytes) else { continue };
+        let key = pdfcraft_fonts::embedding::face_key(&family);
+        let Some(rank) = families.iter().position(|f| *f == key) else { continue };
+        // The family's Regular: its PostScript name is the family alone, or ends in "Regular".
+        let face = pdfcraft_fonts::embedding::face_key(&postscript);
+        let regular = face == key || face.strip_prefix(key.as_str()) == Some("regular");
+        if regular && best.as_ref().is_none_or(|(r, _)| rank < *r) {
+            best = Some((rank, bytes));
+        }
+    }
+    best.map(|(_, bytes)| bytes)
+}
+
 fn font_content_key(bytes: &[u8]) -> (usize, u64) {
     use std::hash::{DefaultHasher, Hasher};
     let mut h = DefaultHasher::new();
@@ -128,6 +199,52 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found.first().unwrap().face, "Inter-Regular");
         assert_eq!(found.first().unwrap().path, expected);
+    }
+
+    #[test]
+    fn the_installed_default_is_the_preferred_familys_regular_face_found_by_file_name() {
+        let root = std::env::temp_dir().join(format!("pdfcraft-font-default-{}", std::process::id()));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let fonts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts");
+        let regular = std::fs::read(fonts.join("Inter-Regular.ttf")).unwrap();
+        // Another weight of the family and a file with another name are both passed over.
+        std::fs::copy(fonts.join("Inter-Medium.ttf"), root.join("Inter-Medium.ttf")).unwrap();
+        std::fs::write(root.join("Other.ttf"), &regular).unwrap();
+        std::fs::write(root.join("inter-broken.ttf"), b"not a font").unwrap();
+        let roots = [root.clone()];
+        assert_eq!(installed_regular_face(&roots, &["inter"], "inter"), None, "no Regular face under a matching name yet");
+        std::fs::write(nested.join("INTER-Regular.TTF"), &regular).unwrap();
+        let found = installed_regular_face(&roots, &["inter"], "inter");
+        let other_family = installed_regular_face(&roots, &["thsarabunpsk"], "inter");
+        let missing_root = installed_regular_face(&[root.join("absent")], &["inter"], "inter");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, Some(regular));
+        assert_eq!((other_family, missing_root), (None, None));
+    }
+
+    #[test]
+    fn a_face_that_cannot_draw_thai_is_not_a_thai_document_font() {
+        let inter = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/Inter-Regular.ttf")).unwrap();
+        assert_eq!(pdfcraft_fonts::installed_thai_family(&inter), Err("Inter cannot draw Thai".to_owned()));
+        assert!(pdfcraft_fonts::installed_thai_family(b"not a font").is_err());
+        // Refused before anything is registered, so the bundled face stays the document face.
+        assert!(pdfcraft_fonts::set_installed_thai_document_font(inter).is_err());
+    }
+
+    #[test]
+    fn a_document_font_needs_no_licence_declaration() {
+        // Inter's name table declares the OFL; a face that declares nothing is as usable.
+        let inter = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/Inter-Regular.ttf")).unwrap();
+        let needle = b"S\0I\0L\0 \0O\0p\0e\0n\0 \0F\0o\0n\0t\0";
+        let mut undeclared = inter.clone();
+        let mut at = 0;
+        while let Some(found) = undeclared[at..].windows(needle.len()).position(|w| w == needle) {
+            undeclared[at + found + 1] = b'x';
+            at += found + needle.len();
+        }
+        assert_ne!(undeclared, inter, "the fixture must have declared its licence");
+        assert_eq!(pdfcraft_fonts::embedding::validate_document_input(&undeclared), Ok(()));
     }
 
     #[test]

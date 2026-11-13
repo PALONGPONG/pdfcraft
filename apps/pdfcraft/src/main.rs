@@ -238,6 +238,13 @@ fn main() -> eframe::Result {
     let integrated = cfg!(target_os = "macos");
     // GNOME on Wayland leaves the window frame to the app (src/decorations.rs).
     let window_controls = if cfg!(any(target_os = "macos", target_os = "windows")) { None } else { decorations::app_drawn() };
+    // Before any text is shaped: Thai written into a PDF uses TH Sarabun PSK when the user has
+    // installed it, else the bundled face. The interface's own fonts are not affected.
+    match pdfcraft_engine::text_fonts::use_installed_thai_document_font() {
+        Ok(Some(family)) => log::info!("Thai document font: {family} (installed)"),
+        Ok(None) => {}
+        Err(why) => log::warn!("Thai document font: an installed face was not used: {why}"),
+    }
     migrate_legacy_folders();
     // The log file stays in the data folder; opened after the arguments (so `--version` leaves
     // no file behind) and after the PrintCraft migration (which a fresh folder would block).

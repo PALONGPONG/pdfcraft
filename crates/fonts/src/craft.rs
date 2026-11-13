@@ -71,8 +71,48 @@ pub fn ui_thai_fonts() -> Vec<&'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.covers("Thai")).collect()
 }
 
+/// The face for Thai text written into PDFs: the installed face the desktop app registered
+/// with [`set_installed_thai_document_font`] (TH Sarabun PSK), else the first craft-fonts
+/// `Thai` face. `None` when there is neither.
 pub fn document_thai_font() -> Option<&'static CraftFont> {
-    ui_thai_fonts().into_iter().next()
+    INSTALLED_THAI.get().or_else(|| ui_thai_fonts().into_iter().next())
+}
+
+static INSTALLED_THAI: std::sync::OnceLock<CraftFont> = std::sync::OnceLock::new();
+
+/// Letters, a vowel above and a tone mark: a face must draw all of them to write Thai.
+const THAI_PROBE: &str = "\u{0E01}\u{0E02}\u{0E04}\u{0E34}\u{0E49}";
+
+/// Make `bytes`, a face installed on the user's machine, the face Thai text is written into
+/// PDFs with, ahead of the craft-fonts one. The interface keeps its own faces
+/// ([`ui_thai_fonts`]). Returns the family name.
+///
+/// Call it once, at start-up, before any Thai text is shaped: the first face registered stays
+/// for the life of the process (shaping caches it), and a later call is refused. The face must
+/// pass [`embedding::validate`](crate::embedding::validate), which refuses a program whose
+/// embedding permissions prohibit it, and must draw Thai.
+pub fn set_installed_thai_document_font(bytes: Vec<u8>) -> Result<&'static str, String> {
+    let family = installed_thai_family(&bytes)?;
+    if INSTALLED_THAI.get().is_some() {
+        return Err("a Thai document font is already registered".into());
+    }
+    // Leaked once per process: every document face is `&'static`, as the embedded ones are.
+    let font = INSTALLED_THAI.get_or_init(|| CraftFont {
+        family: Box::leak(family.into_boxed_str()),
+        style: "Regular",
+        scripts: &["Thai"],
+        bytes: Box::leak(bytes.into_boxed_slice()),
+    });
+    Ok(font.family)
+}
+
+/// The family name of `bytes` when it can serve as the Thai document face, else why not.
+pub fn installed_thai_family(bytes: &[u8]) -> Result<String, String> {
+    let (family, _) = crate::embedding::names(bytes)?;
+    if !crate::embedding::covers(bytes, THAI_PROBE) {
+        return Err(format!("{family} cannot draw Thai"));
+    }
+    Ok(family)
 }
 
 /// The `Deva` craft-fonts faces for Devanagari interface text (the Hindi catalog, file names,
